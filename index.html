@@ -7,6 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.css' rel='stylesheet' />
     <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js'></script>
+    <script src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js'></script>
     <style>
         :root {
             --bg:#FBF7F2; --bg-alt:#F2EBE2; --surface:#FFFFFF; --ink:#1B1710; --ink-soft:#6B6255;
@@ -53,14 +54,10 @@
 
         .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .stat-card { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 14px 15px; }
-        .stat-card.hero { background: linear-gradient(160deg, var(--flame-1), var(--flame-2)); color: #fff; border: none; position: relative; overflow: hidden; }
-        .stat-card.hero::after { content: "🔥"; position: absolute; right: -6px; bottom: -14px; font-size: 64px; opacity: 0.18; }
         .stat-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-soft); margin-bottom: 8px; }
-        .stat-card.hero .stat-label { color: rgba(255,255,255,0.85); }
         .stat-value { font-size: 22px; font-weight: 900; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1; }
         .stat-value small { font-size: 12px; font-weight: 700; margin-left: 2px; }
         .stat-foot { margin-top: 6px; font-size: 11px; color: var(--ink-soft); font-weight: 600; }
-        .stat-card.hero .stat-foot { color: rgba(255,255,255,0.82); }
         .ring-card { display: flex; align-items: center; gap: 10px; }
 
         .progress-ring__circle {
@@ -93,11 +90,6 @@
         <h1 class="text-xl text-center mb-4 flex-shrink-0 brand-mark" style="color: var(--ink);">An<span class="dot">·</span>Run <span style="font-weight:400;">🏃</span></h1>
 
         <div class="stat-grid mb-4 flex-shrink-0">
-            <div class="stat-card hero">
-                <div class="stat-label">연속 러닝</div>
-                <div class="stat-value" id="streakValue">0<small>일째</small></div>
-                <div class="stat-foot" id="streakFoot">기록을 시작해보세요</div>
-            </div>
             <div class="stat-card">
                 <div class="stat-label">이달 총거리</div>
                 <div class="stat-value" id="totalDistance">0.00<small>km</small></div>
@@ -123,6 +115,11 @@
                 <div class="stat-value" id="totalCount">0<small>회</small></div>
                 <div class="stat-foot" id="countFoot">주 평균 0회</div>
             </div>
+            <div class="stat-card">
+                <div class="stat-label">평균 페이스</div>
+                <div class="stat-value" id="avgPace">-:--<small>/km</small></div>
+                <div class="stat-foot" id="paceFoot">기록을 추가해보세요</div>
+            </div>
         </div>
 
         <div class="w-full pt-2 pb-4" style="border-top: 1px solid var(--line);">
@@ -144,6 +141,16 @@
             </div>
 
             <div class="p-5 space-y-5">
+                <div>
+                    <input type="file" id="photoInput" accept="image/*" capture="environment" class="hidden" onchange="handlePhotoUpload(event)">
+                    <button type="button" onclick="document.getElementById('photoInput').click()"
+                            id="photoUploadBtn"
+                            class="w-full py-3 rounded-xl text-sm font-bold transition-colors flex items-center justify-center gap-1.5"
+                            style="background: var(--bg-alt); color: var(--ink-soft); border: 1.5px dashed var(--line);">
+                        📷 사진에서 가져오기
+                    </button>
+                </div>
+
                 <div class="relative">
                     <label class="text-xs font-bold tracking-wide block mb-1.5" style="color: var(--ink-soft);">러닝 거리</label>
                     <div class="relative flex items-center">
@@ -322,6 +329,47 @@
             document.getElementById('modal').classList.remove('hidden');
         }
 
+        function handlePhotoUpload(event) {
+            const file = event.target.files && event.target.files[0];
+            event.target.value = '';
+            if (!file) return;
+
+            const btn = document.getElementById('photoUploadBtn');
+            const originalLabel = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '🔍 사진 읽는 중...';
+
+            Tesseract.recognize(file, 'kor+eng')
+                .then(function(result) {
+                    const text = result.data.text || '';
+
+                    const distanceMatch = text.match(/(\d+\.\d+)\s*km/i);
+                    const durationMatch = text.match(/(\d{2}):(\d{2}):(\d{2})/);
+
+                    if (distanceMatch) {
+                        document.getElementById('distance').value = distanceMatch[1];
+                    }
+                    if (durationMatch) {
+                        document.getElementById('duration').value = durationMatch[0];
+                    }
+
+                    if (!distanceMatch && !durationMatch) {
+                        showToast('사진에서 값을 찾지 못했어요, 직접 입력해주세요.', 'error');
+                    } else if (!distanceMatch || !durationMatch) {
+                        showToast('일부 값만 인식됐어요, 나머지는 확인해서 입력해주세요.', 'error');
+                    } else {
+                        showToast('사진에서 거리/시간을 가져왔어요. 확인 후 저장해주세요.');
+                    }
+                })
+                .catch(function(err) {
+                    showToast('사진 인식에 실패했어요: ' + err.message, 'error');
+                })
+                .finally(function() {
+                    btn.disabled = false;
+                    btn.innerHTML = originalLabel;
+                });
+        }
+
         function loadData() {
             apiCall('getRunRecords')
                 .then(function(data) {
@@ -350,37 +398,10 @@
                 });
         }
 
-        function computeStreak(records) {
-            const dateSet = new Set(records.map(r => String(r.date).split('T')[0]));
-            if (dateSet.size === 0) return { current: 0, best: 0 };
-
-            const toStr = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-            let cursor = new Date();
-            cursor.setHours(0, 0, 0, 0);
-            if (!dateSet.has(toStr(cursor))) {
-                cursor.setDate(cursor.getDate() - 1);
-            }
-            let current = 0;
-            while (dateSet.has(toStr(cursor))) {
-                current++;
-                cursor.setDate(cursor.getDate() - 1);
-            }
-
-            const sortedDates = Array.from(dateSet).sort();
-            let best = 0, run = 0, prev = null;
-            sortedDates.forEach(dateStr => {
-                const d = new Date(dateStr + 'T00:00:00');
-                if (prev !== null) {
-                    const diffDays = Math.round((d - prev) / 86400000);
-                    run = (diffDays === 1) ? run + 1 : 1;
-                } else {
-                    run = 1;
-                }
-                best = Math.max(best, run);
-                prev = d;
-            });
-
-            return { current, best: Math.max(best, current) };
+        function parseDurationToMinutes(duration) {
+            const parts = String(duration || '0:0:0').split(':').map(Number);
+            const h = parts[0] || 0, m = parts[1] || 0, s = parts[2] || 0;
+            return h * 60 + m + s / 60;
         }
 
         function updateMonthlyStats() {
@@ -410,13 +431,18 @@
             const goalRemain = Math.max(0, 100 - currentMonthTotalDistance);
             document.getElementById('distanceFoot').innerText = `목표까지 ${goalRemain.toFixed(2)}km`;
 
-            const streak = computeStreak(cachedRecords);
-            document.getElementById('streakValue').innerHTML = `${streak.current}<small>일째</small>`;
-            document.getElementById('streakFoot').innerText = streak.current === 0
-                ? '오늘 러닝을 기록해보세요'
-                : (streak.best > streak.current
-                    ? `최고 기록 ${streak.best}일까지 ${streak.best - streak.current}일`
-                    : '지금이 개인 최고 기록이에요');
+            const totalMinutes = monthlyFiltered.reduce((sum, r) => sum + parseDurationToMinutes(r.duration), 0);
+            if (currentMonthTotalDistance > 0) {
+                const paceMinPerKm = totalMinutes / currentMonthTotalDistance;
+                let paceMin = Math.floor(paceMinPerKm);
+                let paceSec = Math.round((paceMinPerKm - paceMin) * 60);
+                if (paceSec === 60) { paceMin += 1; paceSec = 0; }
+                document.getElementById('avgPace').innerHTML = `${paceMin}:${String(paceSec).padStart(2, '0')}<small>/km</small>`;
+                document.getElementById('paceFoot').innerText = '이번 달 평균 페이스';
+            } else {
+                document.getElementById('avgPace').innerHTML = `-:--<small>/km</small>`;
+                document.getElementById('paceFoot').innerText = '기록을 추가해보세요';
+            }
 
             updateAchievementRate(currentMonthTotalDistance);
         }
