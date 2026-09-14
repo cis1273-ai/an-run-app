@@ -414,27 +414,76 @@
             }, 1800);
         }
 
+                function preprocessImageForOCR(file) {
+            return new Promise((resolve) => {
+                if (!file || !file.type.startsWith('image/')) {
+                    return resolve(file);
+                }
+                const img = new Image();
+                const url = URL.createObjectURL(file);
+                img.onload = () => {
+                    URL.revokeObjectURL(url);
+                    const maxDim = 1200;
+                    let w = img.width;
+                    let h = img.height;
+                    if (w <= maxDim && h <= maxDim) {
+                        return resolve(file);
+                    }
+                    if (w > h) {
+                        h = Math.round((h * maxDim) / w);
+                        w = maxDim;
+                    } else {
+                        w = Math.round((w * maxDim) / h);
+                        h = maxDim;
+                    }
+                    const canvas = document.createElement('canvas');
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, w, h);
+                    canvas.toBlob((blob) => {
+                        resolve(blob || file);
+                    }, 'image/jpeg', 0.85);
+                };
+                img.onerror = () => resolve(file);
+                img.src = url;
+            });
+        }
+
         function parseRunningDataFromText(text) {
             if (!text) return { distance: null, duration: null };
 
             const fullText = text.replace(/\r/g, '');
+            const lines = fullText.split('\n').map(l => l.trim()).filter(Boolean);
 
             let foundDistance = null;
             let foundDuration = null;
 
             // --- 1. Distance extraction ---
-            const kmMatch = fullText.match(/(\d+(?:[\.,]\d+)?)\s*(?:km|KM|Km|키로|킬로미터)/i);
+            // A: Explicit km / KM / Km / 키로 / 킬로미터 (excluding km/h speed)
+            const kmMatch = fullText.match(/(\d+(?:[\.,]\d+)?)\s*(?:km|KM|Km|키로|킬로미터)(?!\s*\/|\s*h|\s*ph)/i);
             if (kmMatch) {
                 foundDistance = kmMatch[1].replace(',', '.');
             }
 
+            // B: Label-based distance (check same line, line before, or line after "거리" or "distance")
             if (!foundDistance) {
-                const labelMatch = fullText.match(/(?:거리|distance|dist)\s*[:\s]*(\d+(?:[\.,]\d+)?)/i);
-                if (labelMatch) {
-                    foundDistance = labelMatch[1].replace(',', '.');
+                for (let i = 0; i < lines.length; i++) {
+                    if (/(?:거리|distance|dist)/i.test(lines[i])) {
+                        const combined = [lines[i-1] || '', lines[i], lines[i+1] || ''].join(' ');
+                        const numMatch = combined.match(/(\d+(?:[\.,]\d+)?)/);
+                        if (numMatch) {
+                            const val = parseFloat(numMatch[1].replace(',', '.'));
+                            if (val >= 0.1 && val <= 100) {
+                                foundDistance = val.toFixed(2);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
 
+            // C: Floating numbers range match (0.50 to 99.99)
             if (!foundDistance) {
                 const decimalMatches = fullText.match(/\b(\d{1,2}[\.,]\d{1,2})\b/g);
                 if (decimalMatches) {
@@ -449,7 +498,8 @@
             }
 
             // --- 2. Duration extraction ---
-            const hmsMatch = fullText.match(/\b([0-2]?\d):([0-5]\d):([0-5]\d)\b/);
+            // A: hh:mm:ss (00:00:00 to 23:59:59)
+            const hmsMatch = fullText.match(/\b([0-1]?\d|2[0-3]):([0-5]\d):([0-5]\d)\b/);
             if (hmsMatch) {
                 const h = hmsMatch[1].padStart(2, '0');
                 const m = hmsMatch[2];
@@ -457,6 +507,7 @@
                 foundDuration = `${h}:${m}:${s}`;
             }
 
+            // B: mm:ss (00:00 to 59:59) -> 00:mm:ss
             if (!foundDuration) {
                 const msMatch = fullText.match(/\b([0-5]?\d):([0-5]\d)\b/);
                 if (msMatch) {
@@ -466,18 +517,22 @@
                 }
             }
 
+            // C: Korean text (e.g. 1시간 20분 15초) - check bounds: h <= 23, m <= 59, s <= 59
             if (!foundDuration) {
-                const korH = fullText.match(/(\d+)\s*시간/);
-                const korM = fullText.match(/(\d+)\s*분/);
-                const korS = fullText.match(/(\d+)\s*초/);
+                const korH = fullText.match(/(\d{1,2})\s*시간/);
+                const korM = fullText.match(/(\d{1,2})\s*분/);
+                const korS = fullText.match(/(\d{1,2})\s*초/);
                 if (korH || korM || korS) {
-                    const h = (korH ? korH[1] : '0').padStart(2, '0');
-                    const m = (korM ? korM[1] : '0').padStart(2, '0');
-                    const s = (korS ? korS[1] : '0').padStart(2, '0');
-                    foundDuration = `${h}:${m}:${s}`;
+                    const hNum = korH ? parseInt(korH[1], 10) : 0;
+                    const mNum = korM ? parseInt(korM[1], 10) : 0;
+                    const sNum = korS ? parseInt(korS[1], 10) : 0;
+                    if (hNum <= 23 && mNum <= 59 && sNum <= 59 && (hNum > 0 || mNum > 0 || sNum > 0)) {
+                        foundDuration = `${String(hNum).padStart(2, '0')}:${String(mNum).padStart(2, '0')}:${String(sNum).padStart(2, '0')}`;
+                    }
                 }
             }
 
+            // D: Running notation 30'15" or 01'30'15"
             if (!foundDuration) {
                 const quoteMatch = fullText.match(/(\d+)'(\d+)"/);
                 if (quoteMatch) {
@@ -516,50 +571,57 @@
             };
             reader.readAsDataURL(file);
 
-            Tesseract.recognize(file, 'kor+eng')
-                .then(function(result) {
-                    const text = result.data.text || '';
-                    const parsed = parseRunningDataFromText(text);
+            preprocessImageForOCR(file).then(function(processedBlob) {
+                // Primary OCR with kor+eng, with fallback to eng if traineddata download or worker fails
+                Tesseract.recognize(processedBlob, 'kor+eng')
+                    .catch(function(err) {
+                        console.warn('kor+eng OCR fallback to eng:', err);
+                        return Tesseract.recognize(processedBlob, 'eng');
+                    })
+                    .then(function(result) {
+                        const text = (result && result.data && result.data.text) || '';
+                        const parsed = parseRunningDataFromText(text);
 
-                    let foundAny = false;
+                        let foundAny = false;
 
-                    if (parsed.distance) {
-                        const distInput = document.getElementById('distance');
-                        distInput.value = parsed.distance;
-                        highlightInput(distInput);
-                        foundAny = true;
-                    }
+                        if (parsed.distance) {
+                            const distInput = document.getElementById('distance');
+                            distInput.value = parsed.distance;
+                            highlightInput(distInput);
+                            foundAny = true;
+                        }
 
-                    if (parsed.duration) {
-                        const durInput = document.getElementById('duration');
-                        durInput.value = parsed.duration;
-                        highlightInput(durInput);
-                        foundAny = true;
-                    }
+                        if (parsed.duration) {
+                            const durInput = document.getElementById('duration');
+                            durInput.value = parsed.duration;
+                            highlightInput(durInput);
+                            foundAny = true;
+                        }
 
-                    if (parsed.distance && parsed.duration) {
+                        if (parsed.distance && parsed.duration) {
+                            statusSpinner.classList.add('hidden');
+                            statusMsg.innerText = `✅ 거리(${parsed.distance}km) / 시간(${parsed.duration}) 인식 완료!`;
+                            statusMsg.style.color = 'var(--mood-calm)';
+                            showToast('사진에서 거리/시간을 가져왔어요. 확인 후 저장해주세요.');
+                        } else if (foundAny) {
+                            statusSpinner.classList.add('hidden');
+                            statusMsg.innerText = `⚠️ 일부 항목만 인식되었습니다.`;
+                            statusMsg.style.color = 'var(--accent)';
+                            showToast('일부 값만 인식됐어요, 나머지는 확인해서 입력해주세요.', 'error');
+                        } else {
+                            statusSpinner.classList.add('hidden');
+                            statusMsg.innerText = `❌ 값을 찾지 못했습니다. 직접 입력해주세요.`;
+                            statusMsg.style.color = 'var(--mood-hard)';
+                            showToast('사진에서 값을 찾지 못했어요, 직접 입력해주세요.', 'error');
+                        }
+                    })
+                    .catch(function(err) {
                         statusSpinner.classList.add('hidden');
-                        statusMsg.innerText = `✅ 거리(${parsed.distance}km) / 시간(${parsed.duration}) 인식 완료!`;
-                        statusMsg.style.color = 'var(--mood-calm)';
-                        showToast('사진에서 거리/시간을 가져왔어요. 확인 후 저장해주세요.');
-                    } else if (foundAny) {
-                        statusSpinner.classList.add('hidden');
-                        statusMsg.innerText = `⚠️ 일부 항목만 인식되었습니다.`;
-                        statusMsg.style.color = 'var(--accent)';
-                        showToast('일부 값만 인식됐어요, 나머지는 확인해서 입력해주세요.', 'error');
-                    } else {
-                        statusSpinner.classList.add('hidden');
-                        statusMsg.innerText = `❌ 값을 찾지 못했습니다. 직접 입력해주세요.`;
+                        statusMsg.innerText = `❌ 인식 실패`;
                         statusMsg.style.color = 'var(--mood-hard)';
-                        showToast('사진에서 값을 찾지 못했어요, 직접 입력해주세요.', 'error');
-                    }
-                })
-                .catch(function(err) {
-                    statusSpinner.classList.add('hidden');
-                    statusMsg.innerText = `❌ 인식 실패`;
-                    statusMsg.style.color = 'var(--mood-hard)';
-                    showToast('사진 인식에 실패했어요: ' + err.message, 'error');
-                });
+                        showToast('사진 인식에 실패했어요: ' + err.message, 'error');
+                    });
+            });
         }
 
         function loadData() {
